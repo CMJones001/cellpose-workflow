@@ -1,0 +1,10 @@
+[project]
+name = "cellpose-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cellpose[gui]>=4.0.8",
+    "six>=1.17.0",
+]
