@@ -71,9 +71,6 @@
       libaryShellHook = ''
           export UV_PYTHON="${py}/bin/python"
           export UV_LINK_MODE=copy   # avoids symlink weirdness across stores/venvs
-
-          # help compilation/linking discover nix libs
-          export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPath "lib/pkgconfig" nativeLibs}"
       '';
 
       makeShell = { cuda ? false }:
@@ -85,6 +82,7 @@
             packages = buildInputs ++ libs;
             shellHook = libaryShellHook + ''
                 export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libs}":$LD_LIBRARY_PATH
+                export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPath "lib/pkgconfig" libs}"
             '';
           };
       
@@ -102,6 +100,7 @@
             # as the old LD_LIBRARY_PATH is unset, so we don't include it
             text = libaryShellHook + ''
                 export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libs}"
+                export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPath "lib/pkgconfig" libs}"
                 uv run cellpose
             '';
           };
