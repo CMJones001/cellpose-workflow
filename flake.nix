@@ -7,7 +7,7 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };
-      py = pkgs.python312;
+      py = pkgs.python310;
 
       buildInputs = [
         pkgs.uv
@@ -123,9 +123,6 @@
         cpu = run-cellpose-cpu;
         gpu = run-cellpose-gpu;
         default = run-cellpose-gpu;
-        # cpu = { type = "app"; program="${run-cellpose-cpu}/bin/run-cellpose"; };
-        # gpu = { type = "app"; program="${run-cellpose-gpu}/bin/run-cellpose"; };
-        # default = { type = "app"; program="${run-cellpose-gpu}/bin/run-cellpose"; };
       };
     };
 }
