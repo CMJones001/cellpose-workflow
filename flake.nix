@@ -1,5 +1,5 @@
 {
-  description = "uv + nix flake dev shell";
+  description = "A uv based flake to run cellpose with or without a GPU";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -68,7 +68,7 @@
         pkgs.cudaPackages.cuda_nvrtc
       ];
 
-      mkEnv = ''
+      libaryShellHook = ''
           export UV_PYTHON="${py}/bin/python"
           export UV_LINK_MODE=copy   # avoids symlink weirdness across stores/venvs
 
@@ -76,52 +76,56 @@
           export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPath "lib/pkgconfig" nativeLibs}"
       '';
 
-      # cpu_shell = pkgs.mkShell {
-      #   packages = buildInputs ++ nativeLibs;
-      #   shellHook = mkEnv + ''export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath nativeLibs}":$LD_LIBRARY_PATH'';
-      # };
-
-      # cuda_shell = pkgs.mkShell {
-      #     packages = buildInputs ++ nativeLibs ++ cudaLibs;
-      #     shellHook = mkEnv + ''export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath nativeLibs}":"${pkgs.lib.makeLibraryPath cudaLibs}":$LD_LIBRARY_PATH'';
-      # };
-
       makeShell = { cuda ? false }:
         let
           libs = nativeLibs ++ pkgs.lib.optionals cuda cudaLibs;
         in
-          {
+          pkgs.mkShell {
             inherit libs;
             packages = buildInputs ++ libs;
-            shellHook = mkEnv + ''export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libs}":$LD_LIBRARY_PATH'';
+            shellHook = libaryShellHook + ''
+                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libs}":$LD_LIBRARY_PATH
+            '';
           };
       
-      mkShellFor = args: pkgs.mkShell (makeShell args);
-      cpu_shell = mkShellFor { cuda = false; };
-      cuda_shell = mkShellFor { cuda = true; };
-          
+      cpu_shell = makeShell { cuda = false; };
+      gpu_shell = makeShell { cuda = true; };
 
-      run-uvcellpose = pkgs.writeShellApplication {
-        name = "run-cellpose";
+      mkApp = { cuda ? false}:
+        let
+          libs = nativeLibs ++ pkgs.lib.optionals cuda cudaLibs;
+          app = pkgs.writeShellApplication {
+            name = "run-cellpose";
+            runtimeInputs = nativeLibs ++ cudaLibs;
 
-        runtimeInputs = nativeLibs ++ cudaLibs;
-        # Don't include the base LD_LIBRARY_PATH in the run version, it's not set and complains
-        text = mkEnv + ''
-          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath nativeLibs}":"${pkgs.lib.makeLibraryPath cudaLibs}"
-          uv run cellpose
-        '';
-      };
+            # The LD_LIBRARY_PATH is slightly different in the nix run version,
+            # as the old LD_LIBRARY_PATH is unset, so we don't include it
+            text = libaryShellHook + ''
+                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libs}"
+                uv run cellpose
+            '';
+          };
+        in
+          { type = "app"; program = "${app}/bin/run-cellpose"; };
+
+      run-cellpose-cpu = mkApp { cuda = false; };
+      run-cellpose-gpu = mkApp { cuda = true; };
+
     in
     {
       devShells.${system} = {
-        gpu = cuda_shell;
+        gpu = gpu_shell;
         cpu = cpu_shell;
-        default = cuda_shell;
+        default = gpu_shell;
       };
 
-      apps.${system}.default = {
-        type = "app";
-        program = "${run-uvcellpose}/bin/run-cellpose";
+      apps.${system} = {
+        cpu = run-cellpose-cpu;
+        gpu = run-cellpose-gpu;
+        default = run-cellpose-gpu;
+        # cpu = { type = "app"; program="${run-cellpose-cpu}/bin/run-cellpose"; };
+        # gpu = { type = "app"; program="${run-cellpose-gpu}/bin/run-cellpose"; };
+        # default = { type = "app"; program="${run-cellpose-gpu}/bin/run-cellpose"; };
       };
     };
 }
