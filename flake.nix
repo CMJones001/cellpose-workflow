@@ -91,7 +91,7 @@
       cpu_shell = makeShell { cuda = false; };
       gpu_shell = makeShell { cuda = true; };
 
-      mkApp = { cuda ? false}:
+      makeApp = { cuda ? false}:
         let
           libs = nativeLibs ++ pkgs.lib.optionals cuda cudaLibs;
           app = pkgs.writeShellApplication {
@@ -108,8 +108,8 @@
         in
           { type = "app"; program = "${app}/bin/run-cellpose"; };
 
-      run-cellpose-cpu = mkApp { cuda = false; };
-      run-cellpose-gpu = mkApp { cuda = true; };
+      run-cellpose-cpu = makeApp { cuda = false; };
+      run-cellpose-gpu = makeApp { cuda = true; };
 
     in
     {
