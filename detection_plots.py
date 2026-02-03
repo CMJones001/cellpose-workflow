@@ -27,49 +27,33 @@ def equalise_adaptive_hist(image: np.ndarray) -> np.ndarray:
 
 
 def create_detection_plots(
-    mask: np.ndarray,
+    filled_mask: np.ndarray,
+    boundary_mask: np.ndarray,
     image: np.ndarray,
     save_path: Path,
-    granule_cmap: str = "tab20",
+    mask_cmap: str = "tab20",
     image_cmap: str | LinearSegmentedColormap = "inferno",
-    randomised_mask: np.ndarray | None = None,
 ):
-    granule_cmap: plt.Colormap = plt.get_cmap(granule_cmap)
-    granule_cmap.set_bad((0, 0, 0, 0))
+    mask_cmap: plt.Colormap = plt.get_cmap(mask_cmap)
+    mask_cmap.set_under((0, 0, 0, 0))
 
     im_data = image
     im_shape = im_data.shape
     aspect = im_shape[1] / im_shape[0]
 
-    titles = ["Detected", "Original", "Overlay"]
-    if randomised_mask is not None:
-        titles.append("Randomised Mask")
+    titles = ["Filled", "Boundary", "Original", "Overlay"]
 
     fig, axs = create_axes(len(titles), aspect=aspect, col_wrap=2)
+    (ax_filled, ax_edge, ax_image, ax_overlay) = axs
 
-    masked_granules = np.ma.masked_equal(mask, 0)
-    axs[0].imshow(masked_granules, cmap=granule_cmap, interpolation="none")
-    axs[1].imshow(
-        image,
-        cmap=image_cmap,
-    )
+    mask_kwargs = dict(cmap=mask_cmap, vmin=1.0, interpolation="none")
 
-    axs[2].imshow(
-        image,
-        cmap=image_cmap,
-    )
-    axs[2].imshow(masked_granules, cmap=granule_cmap, interpolation="none", alpha=0.3)
+    ax_filled.imshow(filled_mask, **mask_kwargs)
+    ax_edge.imshow(boundary_mask, **mask_kwargs)
+    ax_image.imshow(image, cmap=image_cmap)
 
-    if randomised_mask is not None:
-        random_cmap: plt.Colormap = plt.get_cmap("viridis")
-        random_cmap.set_under((0, 0, 0, 0))
-        axs[3].imshow(
-            randomised_mask,
-            cmap=random_cmap,
-            interpolation="none",
-            vmax=1.0,
-            vmin=0.005,
-        )
+    ax_overlay.imshow(image, cmap=image_cmap)
+    ax_overlay.imshow(boundary_mask, alpha=0.5, **mask_kwargs)
 
     tick_spacing = 128
 

@@ -1,3 +1,5 @@
+import random
+from fontTools.misc.iterTools import zip_longest
 import enum
 import logging
 from pathlib import Path
@@ -16,28 +18,46 @@ from skimage.measure._regionprops import RegionProperties
 import detection_plots as dp
 
 
-def main(input_dir: Path, save_dir: Path):
+def main(input_dir: Path, save_dir: Path, pre_enhance_image: bool = False):
     setup_logger()
 
     image_paths = _parse_input_images(input_dir)
+    cell_df = []
     for image_path in image_paths:
         try:
-            process_image(image_path, save_dir)
+            df_part = process_image(
+                image_path, save_dir, pre_enhance_image=pre_enhance_image
+            )
+            cell_df.append(df_part)
         except ValueError as e:
             logging.error(f"Unable to process image, {image_path}: {e}")
 
-    pass
+    cell_df: pd.DataFrame = pd.concat(cell_df, ignore_index=True)
+    print(cell_df)
+    cell_df.to_csv(save_dir / "stats.csv")
 
 
-def process_image(image_path: Path, save_dir: Path) -> pd.DataFrame:
+def process_image(
+    image_path: Path, save_dir: Path, pre_enhance_image: bool = True
+) -> pd.DataFrame:
     model = models.CellposeModel(gpu=True)
     image = read_image(image_path)
     logging.debug(f"Starting segmentation {image_path}")
 
-    # Matching the normalize values in the gui, can probably do better than this though.
-    normalisation_args = dict(lowhigh=[1.0, 99.0], normalize=True)
+    enhancement_mode = EnhancementMethod.ADAPT_HIST
+    enhanced_image = enhancement_mode(image)
+
+    if pre_enhance_image:
+        # Normalisation seems to break with the enhanced image
+        image_to_segment = enhanced_image
+        normalisation_args = dict(normalize=True)
+    else:
+        image_to_segment = image
+        normalisation_args = dict(lowhigh=[1.0, 99.0], normalize=True)
+
+    # Matching the normalize values in the GUI, can probably do better than this though.
     masks, flows, styles = model.eval(
-        image,
+        image_to_segment,
         diameter=60,
         flow_threshold=0.4,
         cellprob_threshold=0.0,
@@ -46,18 +66,24 @@ def process_image(image_path: Path, save_dir: Path) -> pd.DataFrame:
     logging.info(f"Found {masks.max()} masks")
 
     save_path = save_dir / f"{image_path.stem}.png"
-    enhancement_mode = EnhancementMethod.ADAPT_HIST
-    enhanced_image = enhancement_mode(image)
 
     randomised_mask = randomise_mask(masks)
     boundary_mask = convert_mask_to_boundary(randomised_mask)
 
     dp.create_detection_plots(
-        boundary_mask,
-        enhanced_image,
-        save_path,
+        boundary_mask=boundary_mask,
+        filled_mask=randomised_mask,
+        image=enhanced_image,
+        save_path=save_path,
         image_cmap="gist_yarg",
-        randomised_mask=randomised_mask,
+    )
+
+    image_props = {"name": image_path.stem, "count": masks.max()}
+    return pd.DataFrame(
+        data=image_props,
+        index=[
+            0,
+        ],
     )
 
 
@@ -113,10 +139,15 @@ def randomise_mask(labelled_masks: np.ndarray, low_value: float = 0.01) -> np.nd
     # Seeded so that it'll at least be identical given the same input
     rng = np.random.default_rng(42)
 
-    randomised_mask = np.zeros_like(labelled_masks, dtype=float)
-    for i in range(1, labelled_masks.max()):
-        label_region = labelled_masks == i
-        randomised_mask[label_region] = rng.uniform(low=low_value, high=1.0)
+    old_labels = np.arange(1, labelled_masks.max())
+    mixed_labels = old_labels.copy()
+    rng.shuffle(mixed_labels)
+
+    randomised_mask = np.zeros_like(labelled_masks)
+    for old_label, new_label in zip(old_labels, mixed_labels):
+        label_region = labelled_masks == old_label
+        randomised_mask[label_region] = new_label
+
     return randomised_mask
 
 
@@ -152,11 +183,7 @@ def setup_logger():
 
 if __name__ == "__main__":
     data_dir = Path(__file__).parent / "sample-data"
-    # input_dir = data_dir / "faz-images/Phase"
-    save_dir = data_dir / "faz-images/PhaseOut"
-
-    input_dir = Path(
-        "/home/carl/scratch/cellpose-test/sample-data/faz-images/Phase/20251216_Faz-SGs__A1_1_00d00h00m.jpg"
-    )
+    input_dir = data_dir / "faz-images/Phase"
+    save_dir = data_dir / "faz-images/phase-out-enhanced"
 
     main(input_dir, save_dir)
