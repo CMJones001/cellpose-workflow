@@ -1,8 +1,8 @@
-import random
-from fontTools.misc.iterTools import zip_longest
 import enum
 import logging
 from pathlib import Path
+import argparse
+
 
 import os
 from rich.logging import RichHandler
@@ -12,21 +12,49 @@ import numpy as np
 import pandas as pd
 from cellpose import models
 from cellpose.io import imread
-from skimage import exposure, measure, filters, morphology
+from skimage import measure, morphology
 from skimage.measure._regionprops import RegionProperties
+from time import perf_counter
 
 import detection_plots as dp
 
 
-def main(input_dir: Path, save_dir: Path, pre_enhance_image: bool = False):
-    setup_logger()
+class EnhancementMethod(enum.IntEnum):
+    NONE = enum.auto()
+    HIST = enum.auto()
+    ADAPT_HIST = enum.auto()
+
+    def __call__(self, image: np.ndarray) -> np.ndarray:
+        match self:
+            case EnhancementMethod.NONE:
+                return image
+            case EnhancementMethod.HIST:
+                return dp.equalise_hist(image)
+            case EnhancementMethod.ADAPT_HIST:
+                return dp.equalise_adaptive_hist(image)
+
+            case _:
+                raise ValueError(f"{self} not supported for image enhancement.")
+
+
+def main(
+    input_dir: Path,
+    save_dir: Path,
+    pre_enhance_image: bool = False,
+    enhancement_method: EnhancementMethod = EnhancementMethod.ADAPT_HIST,
+):
+    logger = setup_logger()
+    start_time = perf_counter()
 
     image_paths = _parse_input_images(input_dir)
     cell_df = []
     for image_path in image_paths:
         try:
             df_part = process_image(
-                image_path, save_dir, pre_enhance_image=pre_enhance_image
+                image_path,
+                save_dir,
+                pre_enhance_image=pre_enhance_image,
+                enhancement_method=enhancement_method,
             )
             cell_df.append(df_part)
         except ValueError as e:
@@ -35,10 +63,29 @@ def main(input_dir: Path, save_dir: Path, pre_enhance_image: bool = False):
     cell_df: pd.DataFrame = pd.concat(cell_df, ignore_index=True)
     print(cell_df)
     cell_df.to_csv(save_dir / "stats.csv")
+    end_time = perf_counter()
+
+    if logger.isEnabledFor(logging.INFO):
+        duration = end_time - start_time
+        n_images = len(image_paths)
+
+        def to_minutes(time_sec: int | float) -> str:
+            if time_sec < 60:
+                return f"{time_sec:.1f}"
+            minutes = time_sec // 60
+            sec_remainder = time_sec % 60
+            return f"{minutes}:{sec_remainder:02d}"
+
+        logging.info(
+            f"Time taken {to_minutes(duration)} seconds ({to_minutes(duration / n_images)} s / image)"
+        )
 
 
 def process_image(
-    image_path: Path, save_dir: Path, pre_enhance_image: bool = True
+    image_path: Path,
+    save_dir: Path,
+    pre_enhance_image: bool = True,
+    enhancement_method: EnhancementMethod = EnhancementMethod.ADAPT_HIST,
 ) -> pd.DataFrame:
     model = models.CellposeModel(gpu=True)
     image = read_image(image_path)
@@ -68,7 +115,7 @@ def process_image(
     save_path = save_dir / f"{image_path.stem}.png"
 
     randomised_mask = randomise_mask(masks)
-    boundary_mask = convert_mask_to_boundary(randomised_mask)
+    boundary_mask = convert_filled_mask_to_boundary(randomised_mask)
 
     dp.create_detection_plots(
         boundary_mask=boundary_mask,
@@ -81,9 +128,7 @@ def process_image(
     image_props = {"name": image_path.stem, "count": masks.max()}
     return pd.DataFrame(
         data=image_props,
-        index=[
-            0,
-        ],
+        index=[0],
     )
 
 
@@ -112,11 +157,14 @@ class EnhancementMethod(enum.IntEnum):
                 raise ValueError(f"{self} not supported for image enhancement.")
 
 
-def convert_mask_to_boundary(labelled_masks: np.ndarray) -> np.ndarray:
-    props: list[RegionProperties] = measure.regionprops(labelled_masks)
-    base_arr = np.zeros_like(labelled_masks, dtype="int64")
+def convert_filled_mask_to_boundary(
+    filled_mask: np.ndarray, boundary_thickness: int = 7
+) -> np.ndarray:
+    """Convert a filled, labelled image into a labelled set of boundaries."""
+    props: list[RegionProperties] = measure.regionprops(filled_mask)
+    boundary_mask = np.zeros_like(filled_mask, dtype="int64")
 
-    footprint = morphology.disk(radius=7)
+    footprint = morphology.disk(radius=boundary_thickness)
 
     for prop in props:
         local_mask = prop.image
@@ -124,17 +172,19 @@ def convert_mask_to_boundary(labelled_masks: np.ndarray) -> np.ndarray:
         shrunk_area = morphology.binary_erosion(local_mask, footprint)
         ring = np.logical_xor(local_mask, shrunk_area)
 
-        base_arr[prop.slice] += ring * prop.label
+        # As we do an erosion, the ring will always be smaller than the original mask,
+        # so this is okay, we'd have to handle overlaps more carefully otherwise
+        boundary_mask[prop.slice] += ring * prop.label
 
-    return base_arr
+    return boundary_mask
 
 
-def randomise_mask(labelled_masks: np.ndarray, low_value: float = 0.01) -> np.ndarray:
-    """ "Replace the labels on the mask with a random number.
+def randomise_mask(labelled_masks: np.ndarray) -> np.ndarray:
+    """Shuffle the labels on the mask.
 
-    This helps break up the grouping of the colours in the plot.
-    A ``low_value`` can be provided, where the random values are in the range (low_value, 1.0),
-    this allows a bit of an easier distinction between the background and the labels.
+    If nearby cells have similar numbers, then they'll likely share the same colour in the plots,
+    making the segmentation appear worse. Shuffling the labels helps with this, but can't entirely
+    eliminate the problem.
     """
     # Seeded so that it'll at least be identical given the same input
     rng = np.random.default_rng(42)
@@ -152,6 +202,14 @@ def randomise_mask(labelled_masks: np.ndarray, low_value: float = 0.01) -> np.nd
 
 
 def _parse_input_images(image_path: Path, extension: str = "*.jpg") -> list[Path]:
+    """Return a list of images from a file or directory.
+
+    If image_path is a file, return a one-element list containing that file.
+    If image_path is a directory, return all files in the directory matching the given glob
+    pattern (extension).
+
+    Quits the program if no files are found.
+    """
     if image_path.is_file():
         logging.info(f"Given image {image_path} directly")
         return [image_path]
@@ -168,7 +226,8 @@ def _parse_input_images(image_path: Path, extension: str = "*.jpg") -> list[Path
     raise SystemExit(f"Given path {image_path} is not a file or directory")
 
 
-def setup_logger():
+def setup_logger() -> logging.Logger:
+    """Add some prettiness to the logging output, also read the ``LOG_LEVEL`` envvar."""
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 
     logging.basicConfig(
@@ -179,6 +238,37 @@ def setup_logger():
     )
 
     return logging.getLogger("rich_logger")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Image enhancement tool")
+    parser.add_argument("input_dir", type=Path, help="Directory of input images")
+    parser.add_argument("save_dir", type=Path, help="Directory to save enhanced images")
+    parser.add_argument(
+        "--pre_enhance_image",
+        action="store_true",
+        help="Perform image enhancements before segmentation?",
+    )
+
+    parser.add_argument(
+        "--enhancement_method",
+        type=str,
+        choices=[e.name for e in EnhancementMethod],
+        default=EnhancementMethod.ADAPT_HIST.name,
+        help="Choice of enhancement method (NONE, HIST, ADAPT_HIST)",
+    )
+
+    return parser.parse_args()
+
+
+def run_cli():
+    args = parse_args()
+    main(
+        input_dir,
+        save_dir,
+        args.pre_enhance_image,
+        enhancement_method=args.enhancment_method,
+    )
 
 
 if __name__ == "__main__":
