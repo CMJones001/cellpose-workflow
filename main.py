@@ -16,6 +16,7 @@ from skimage import measure, morphology
 from skimage.measure._regionprops import RegionProperties
 
 import detection_plots as dp
+import cmcrameri.cm as cmc
 
 
 class EnhancementMethod(enum.IntEnum):
@@ -123,7 +124,9 @@ def process_image(
         randomised_mask = randomise_mask(masks)
         mask_cmap = "tab20"
 
-    boundary_mask = convert_filled_mask_to_boundary(randomised_mask)
+    boundary_mask = convert_filled_mask_to_boundary(
+        randomised_mask, boundary_thickness=10
+    )
 
     dp.create_detection_plots(
         boundary_mask=boundary_mask,
@@ -131,7 +134,7 @@ def process_image(
         image=enhanced_image,
         save_path=save_path,
         mask_cmap=mask_cmap,
-        image_cmap="gist_yarg",
+        image_cmap=cmc.broc,
     )
 
     image_props = {"name": image_path.stem, "count": masks.max()}
