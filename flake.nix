@@ -68,6 +68,10 @@
         pkgs.cudaPackages.cuda_nvrtc
       ];
 
+      extraPackages = [
+        pkgs.fiji
+      ];
+
       libaryShellHook = ''
           export UV_PYTHON="${py}/bin/python"
           export UV_LINK_MODE=copy   # avoids symlink weirdness across stores/venvs
@@ -79,7 +83,7 @@
         in
           pkgs.mkShell {
             inherit libs;
-            packages = buildInputs ++ libs;
+            packages = buildInputs ++ libs ++ extraPackages;
             shellHook = libaryShellHook + ''
                 export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libs}":$LD_LIBRARY_PATH
                 export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPath "lib/pkgconfig" libs}"
@@ -122,6 +126,7 @@
         cpu = run-cellpose-cpu;
         gpu = run-cellpose-gpu;
         default = run-cellpose-gpu;
+        fiji = { type = "app"; program = "${pkgs.fiji}/bin/fiji"; };
       };
     };
 }
