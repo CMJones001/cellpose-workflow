@@ -1,20 +1,19 @@
+#!/usr/bin/env python
+import argparse
 import enum
 import logging
-from pathlib import Path
-import argparse
-
-
 import os
-from rich.logging import RichHandler
+from pathlib import Path
+from time import perf_counter
 
-
+import ncolor
 import numpy as np
 import pandas as pd
 from cellpose import models
 from cellpose.io import imread
+from rich.logging import RichHandler
 from skimage import measure, morphology
 from skimage.measure._regionprops import RegionProperties
-from time import perf_counter
 
 import detection_plots as dp
 
@@ -42,6 +41,7 @@ def main(
     save_dir: Path,
     pre_enhance_image: bool = False,
     enhancement_method: EnhancementMethod = EnhancementMethod.ADAPT_HIST,
+    four_colour: bool = False,
 ):
     logger = setup_logger()
     start_time = perf_counter()
@@ -55,6 +55,7 @@ def main(
                 save_dir,
                 pre_enhance_image=pre_enhance_image,
                 enhancement_method=enhancement_method,
+                four_colour=four_colour,
             )
             cell_df.append(df_part)
         except ValueError as e:
@@ -86,6 +87,7 @@ def process_image(
     save_dir: Path,
     pre_enhance_image: bool = True,
     enhancement_method: EnhancementMethod = EnhancementMethod.ADAPT_HIST,
+    four_colour: bool = False,
 ) -> pd.DataFrame:
     model = models.CellposeModel(gpu=True)
     image = read_image(image_path)
@@ -114,7 +116,13 @@ def process_image(
 
     save_path = save_dir / f"{image_path.stem}.png"
 
-    randomised_mask = randomise_mask(masks)
+    if four_colour:
+        randomised_mask = ncolor.label(masks)
+        mask_cmap = "viridis"
+    else:
+        randomised_mask = randomise_mask(masks)
+        mask_cmap = "tab20"
+
     boundary_mask = convert_filled_mask_to_boundary(randomised_mask)
 
     dp.create_detection_plots(
@@ -122,6 +130,7 @@ def process_image(
         filled_mask=randomised_mask,
         image=enhanced_image,
         save_path=save_path,
+        mask_cmap=mask_cmap,
         image_cmap="gist_yarg",
     )
 
@@ -257,6 +266,12 @@ def parse_args():
         default=EnhancementMethod.ADAPT_HIST.name,
         help="Choice of enhancement method (NONE, HIST, ADAPT_HIST)",
     )
+    parser.add_argument(
+        "-f",
+        "--four_colour",
+        action="store_true",
+        help="Use four colouring on the segmentation.",
+    )
 
     return parser.parse_args()
 
@@ -276,4 +291,10 @@ if __name__ == "__main__":
     input_dir = data_dir / "faz-images/Phase"
     save_dir = data_dir / "faz-images/phase-out-enhanced"
 
-    main(input_dir, save_dir)
+    main(
+        input_dir,
+        save_dir,
+        four_colour=True,
+        enhancement_method=EnhancementMethod.ADAPT_HIST,
+        pre_enhance_image=True,
+    )
