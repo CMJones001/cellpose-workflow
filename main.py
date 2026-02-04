@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from properties_table import create_summary
 import argparse
 import enum
 import logging
@@ -60,11 +61,16 @@ def main(
             cell_df.append(df_part)
         except ValueError as e:
             logging.error(f"Unable to process image, {image_path}: {e}")
+        except NoMasksFound as _:
+            logging.warning(f"No cells found in {image_path}")
+
+    end_time = perf_counter()
 
     cell_df: pd.DataFrame = pd.concat(cell_df, ignore_index=True)
-    print(cell_df)
     cell_df.to_csv(save_dir / "stats.csv")
-    end_time = perf_counter()
+
+    summary_df = create_summary(cell_df, image_paths)
+    summary_df.to_csv(save_dir / "summary.csv")
 
     if logger.isEnabledFor(logging.INFO):
         duration = end_time - start_time
@@ -91,20 +97,20 @@ def process_image(
 ) -> pd.DataFrame:
     model = models.CellposeModel(gpu=True)
     image = read_image(image_path)
-    logging.debug(f"Starting segmentation {image_path}")
+    logging.info(f"Starting segmentation {image_path}")
 
     enhancement_mode = EnhancementMethod.ADAPT_HIST
     enhanced_image = enhancement_mode(image)
 
     if pre_enhance_image:
-        # Normalisation seems to break with the enhanced image
         image_to_segment = enhanced_image
+        # Normalisation seems to break with the enhanced image
         normalisation_args = dict(normalize=True)
     else:
         image_to_segment = image
+        # Matching the normalize values in the GUI, can probably do better than this though.
         normalisation_args = dict(lowhigh=[1.0, 99.0], normalize=True)
 
-    # Matching the normalize values in the GUI, can probably do better than this though.
     masks, flows, styles = model.eval(
         image_to_segment,
         diameter=60,
@@ -112,13 +118,17 @@ def process_image(
         cellprob_threshold=0.0,
         normalize=normalisation_args,
     )
-    logging.info(f"Found {masks.max()} masks")
+
+    n_masks = masks.max()
+    if n_masks == 0:
+        raise NoMasksFound(f"No masks found in {image_path}")
+    logging.info(f"Found {n_masks} masks")
 
     save_path = save_dir / f"{image_path.stem}.png"
 
     if four_colour:
         randomised_mask = ncolor.label(masks)
-        mask_cmap = "viridis"
+        mask_cmap = "Paired"
     else:
         randomised_mask = randomise_mask(masks)
         mask_cmap = "tab20"
@@ -134,11 +144,11 @@ def process_image(
         image_cmap="gist_yarg",
     )
 
-    image_props = {"name": image_path.stem, "count": masks.max()}
-    return pd.DataFrame(
-        data=image_props,
-        index=[0],
-    )
+    image_props = get_granule_properties_table(masks, image_to_segment)
+    image_props["im_name"] = image_path.stem
+    image_props["count"] = masks.max()
+
+    return image_props
 
 
 def read_image(image_path: Path) -> np.ndarray:
@@ -146,6 +156,42 @@ def read_image(image_path: Path) -> np.ndarray:
     if image is None:
         raise ValueError(f"Unable to load image: {image_path}")
     return image
+
+
+def get_granule_properties_table(
+    labelled_image: np.ndarray, image: np.ndarray
+) -> pd.DataFrame:
+    # This doesn't need the intensity ``image``, but nice to have incase we want to add something
+    # else.
+    granule_df = pd.DataFrame(
+        measure.regionprops_table(
+            labelled_image,
+            image,
+            properties=[
+                "label",
+                "area",
+                "major_axis_length",
+                "equivalent_diameter_area",
+                "perimeter_crofton",
+                "perimeter",
+                "eccentricity",
+            ],
+        )
+    )
+    # type: ignore
+    # Derive some extra columns that aren't provided by skimage
+    granule_df["circularity_equiv"] = (
+        granule_df["major_axis_length"] / granule_df["equivalent_diameter_area"]
+    )
+    granule_df["circularity_crofton"] = (
+        granule_df["perimeter"] / granule_df["perimeter_crofton"]
+    )
+
+    # Drop some columns that were used for computations
+    granule_df = granule_df.drop(
+        columns=["major_axis_length", "equivalent_diameter_area", "perimeter_crofton"]
+    )
+    return granule_df
 
 
 class EnhancementMethod(enum.IntEnum):
@@ -284,6 +330,10 @@ def run_cli():
         args.pre_enhance_image,
         enhancement_method=args.enhancment_method,
     )
+
+
+class NoMasksFound(Exception):
+    pass
 
 
 if __name__ == "__main__":
